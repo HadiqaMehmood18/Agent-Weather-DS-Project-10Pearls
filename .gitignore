@@ -218,3 +218,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+data/
+.env
+.venv/
+reports/eda/
+.pytest_cache/

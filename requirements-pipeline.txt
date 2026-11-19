@@ -1,0 +1,15 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+pandas>=2.1
+numpy
+scipy
+scikit-learn>=1.4
+statsmodels>=0.14
+torch
+shap>=0.45
+langgraph>=0.2
+requests
+pyarrow
+joblib
+matplotlib
+seaborn
+hopsworks[python]>=4.2
