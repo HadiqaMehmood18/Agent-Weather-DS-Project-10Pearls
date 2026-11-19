@@ -1,0 +1,8 @@
+streamlit>=1.50
+plotly
+pandas>=2.1
+numpy
+pyarrow
+requests
+joblib
+hopsworks[python]>=4.2
