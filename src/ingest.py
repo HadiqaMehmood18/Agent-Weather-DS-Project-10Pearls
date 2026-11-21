@@ -1,21 +1,31 @@
-"""Feature pipeline, part 1: data sources and fusion.
+"""Feature pipeline: data sources, fusion and imputation.
 
 Sources (fusion by PRIORITY: gaps in the primary are filled from the next source):
   1. Open-Meteo weather + air-quality  (primary, keyless, full history -> backfill)
   2. OpenWeather current weather        (optional, needs OPENWEATHER_KEY)
   3. AQICN current AQI                  (optional, needs AQICN_TOKEN)
-Imputation (issue #4) and the hourly/backfill entry point (issue #6) are added later.
+
+Imputation strategy (applied per column, in this order):
+  a) reindex to a complete hourly grid (missing timestamps become NaN rows)
+  b) gaps of up to 3 h: linear time interpolation (precipitation: 0 mm)
+  c) longer gaps: value of the same hour 1 day earlier, then 2 days earlier
+  d) still missing: forward fill for up to 6 h
+  e) still missing: rolling 7-day median, then the overall median
+  Wind direction is imputed through its sin/cos components, so 350 and 10 degrees are neighbours.
+  `n_imputed` counts how many raw fields of a row were imputed.
+The hourly/backfill entry point (issue #6) is added later.
 """
 import math
 import os
 import time
 from datetime import timedelta
 
+import numpy as np
 import pandas as pd
 import requests
 
 from . import config as C
-from .features import RAW_COLS
+from .features import RAW_COLS, add_wind_components
 
 OM_WEATHER = "https://api.open-meteo.com/v1/forecast"
 OM_ARCHIVE = "https://archive-api.open-meteo.com/v1/archive"
@@ -139,3 +149,39 @@ def fuse(raw):
             continue
         out = part if out is None else out.combine_first(part)
     return out.reindex(columns=RAW_COLS).astype(float)
+
+
+MAX_INTERP_GAP_H = 3     # gaps up to this length are interpolated
+FFILL_LIMIT_H = 6        # forward-fill limit when no earlier day is available
+
+
+def _gap_lengths(s):
+    """For every NaN, the length of the consecutive NaN run it belongs to."""
+    na = s.isna()
+    run = na.ne(na.shift(fill_value=False)).cumsum()
+    return na, na.groupby(run).transform("sum")
+
+
+def impute(df):
+    """df: output of fuse() (index ts). Returns a gap-free hourly frame plus wind_sin, wind_cos
+    and n_imputed. Strategy is described in the module docstring."""
+    full = pd.date_range(df.index.min(), df.index.max(), freq="h")
+    df = df.reindex(full)
+    df.index.name = "ts"
+    df["n_imputed"] = df[RAW_COLS].isna().sum(axis=1)
+    df = add_wind_components(df)
+    cols = [c for c in RAW_COLS if c != "wind_dir"] + ["wind_sin", "wind_cos"]
+    for c in cols:
+        s = df[c]
+        na, run_len = _gap_lengths(s)
+        short = na & (run_len <= MAX_INTERP_GAP_H)
+        if c == "precip_mm":
+            s = s.mask(short, 0.0)                                   # short dry gap: assume no rain
+        else:
+            s = s.mask(short, s.interpolate(method="time", limit_area="inside"))
+        s = s.fillna(s.shift(24)).fillna(s.shift(48))                # same hour 1 / 2 days earlier
+        s = s.ffill(limit=FFILL_LIMIT_H)
+        s = s.fillna(s.rolling(168, min_periods=1).median()).fillna(s.median())
+        df[c] = s
+    df["wind_dir"] = (np.rad2deg(np.arctan2(df["wind_sin"], df["wind_cos"])) + 360) % 360
+    return df
