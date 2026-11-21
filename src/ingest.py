@@ -6,6 +6,7 @@ Sources (fusion by PRIORITY: gaps in the primary are filled from the next source
   3. AQICN current AQI                  (optional, needs AQICN_TOKEN)
 Imputation (issue #4) and the hourly/backfill entry point (issue #6) are added later.
 """
+import math
 import os
 import time
 from datetime import timedelta
@@ -84,16 +85,45 @@ def fetch_openweather(now):
         print("OpenWeather failed:", type(e).__name__)
 
 
+MAX_STATION_KM = 50      # reject AQICN stations farther than this from the city
+MAX_AGE_H = 3            # reject readings older than this
+
+
+def _km(lat1, lon1, lat2, lon2):
+    """Great-circle distance in km (haversine)."""
+    p = math.pi / 180
+    a = (math.sin((lat2 - lat1) * p / 2) ** 2
+         + math.cos(lat1 * p) * math.cos(lat2 * p) * math.sin((lon2 - lon1) * p / 2) ** 2)
+    return 12742 * math.asin(math.sqrt(a))
+
+
 def fetch_aqicn(now):
-    """Current AQI from the nearest AQICN station. Returns None if no token is set or the call fails."""
+    """Current AQI from AQICN. Uses the station in AQICN_STATION (uid) if set, otherwise the nearest
+    station. Rejected (returns None) when the station is farther than MAX_STATION_KM from the city,
+    the reading is older than MAX_AGE_H hours, or the AQI is not a number (dead station)."""
     token = os.getenv("AQICN_TOKEN")
     if not token:
         return None
+    uid = os.getenv("AQICN_STATION")
+    path = f"@{uid}" if uid else f"geo:{C.LAT};{C.LON}"
     try:
-        d = _get(f"https://api.waqi.info/feed/geo:{C.LAT};{C.LON}/", {"token": token})["data"]
+        d = _get(f"https://api.waqi.info/feed/{path}/", {"token": token})["data"]
+        st_lat, st_lon = d["city"]["geo"]
+        dist = _km(C.LAT, C.LON, float(st_lat), float(st_lon))
+        if dist > MAX_STATION_KM:
+            print(f"AQICN station '{d['city']['name']}' is {dist:.0f} km away, rejected")
+            return None
+        aqi = pd.to_numeric(d.get("aqi"), errors="coerce")
+        if pd.isna(aqi):
+            print(f"AQICN station '{d['city']['name']}' has no valid AQI, rejected")
+            return None
+        obs = pd.Timestamp(d["time"]["iso"]).tz_convert("UTC").tz_localize(None)
+        if now - obs > pd.Timedelta(hours=MAX_AGE_H):
+            print(f"AQICN reading from {obs} is stale, rejected")
+            return None
         iaqi = d.get("iaqi", {})
-        g = lambda k: iaqi.get(k, {}).get("v")
-        return {"ts": now, "source": "aqicn", "us_aqi": d.get("aqi"), "pm2_5": g("pm25"), "pm10": g("pm10"),
+        g = lambda k: pd.to_numeric(iaqi.get(k, {}).get("v"), errors="coerce")
+        return {"ts": now, "source": "aqicn", "us_aqi": aqi, "pm2_5": g("pm25"), "pm10": g("pm10"),
                 "ozone": g("o3"), "no2": g("no2"), "so2": g("so2"), "co": g("co")}
     except Exception as e:
         print("AQICN failed:", type(e).__name__)
