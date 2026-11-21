@@ -14,6 +14,7 @@ def _frame(source, ts, **vals):
     return df
 
 
+# ---------------------------------------------------------------- fusion
 def test_fusion_uses_priority_and_fills_gaps_from_secondary():
     ts = ["2026-11-21 10:00", "2026-11-21 11:00"]
     primary = _frame("open_meteo", ts, temperature=[30.0, np.nan])
@@ -30,6 +31,7 @@ def test_fusion_keeps_timestamps_only_present_in_secondary():
     assert len(out) == 2 and out["temperature"].tolist() == [30.0, 28.0]
 
 
+# ---------------------------------------------------------------- Open-Meteo parsing
 def _fake_get(url, params, tries=3):
     ts = pd.date_range(params["start_date"], periods=48, freq="h")
     h = {"time": [t.strftime("%Y-%m-%dT%H:%M") for t in ts]}
@@ -46,6 +48,7 @@ def test_open_meteo_parsing_returns_all_raw_columns(monkeypatch):
     assert (df["source"] == "open_meteo").all() and df["ts"].is_unique
 
 
+# ---------------------------------------------------------------- secondary sources
 def test_failing_or_unconfigured_secondary_sources_return_none(monkeypatch):
     now = pd.Timestamp("2026-11-21 10:00")
     monkeypatch.delenv("OPENWEATHER_KEY", raising=False)
@@ -58,3 +61,45 @@ def test_failing_or_unconfigured_secondary_sources_return_none(monkeypatch):
     monkeypatch.setenv("AQICN_TOKEN", "x")
     monkeypatch.setattr(ingest, "_get", boom)
     assert ingest.fetch_openweather(now) is None and ingest.fetch_aqicn(now) is None
+
+
+# ---------------------------------------------------------------- AQICN guards
+NOW = pd.Timestamp("2026-11-21 05:00")          # = 10:00 at +05:00 (Karachi)
+
+
+def _station(aqi, iso, geo=(24.9, 67.05)):
+    """Fake AQICN response for a station at `geo` (default: close to Karachi)."""
+    return {"data": {"aqi": aqi, "city": {"name": "Test station", "geo": list(geo)},
+                     "time": {"iso": iso}, "iaqi": {"pm25": {"v": 45}}}}
+
+
+def _use(monkeypatch, response):
+    monkeypatch.setenv("AQICN_TOKEN", "x")
+    monkeypatch.delenv("AQICN_STATION", raising=False)
+    monkeypatch.setattr(ingest, "_get", lambda *a, **k: response)
+
+
+def test_haversine_distance_karachi_to_ahmedabad():
+    d = ingest._km(24.8882, 67.0452, 23.0, 72.5)
+    assert 580 < d < 610                         # about 593 km
+
+
+def test_aqicn_rejects_faraway_station(monkeypatch):
+    _use(monkeypatch, _station(69, "2026-11-21T10:00:00+05:00", geo=(23.0, 72.5)))   # Ahmedabad
+    assert ingest.fetch_aqicn(NOW) is None
+
+
+def test_aqicn_accepts_nearby_fresh_station(monkeypatch):
+    _use(monkeypatch, _station(118, "2026-11-21T10:00:00+05:00"))
+    out = ingest.fetch_aqicn(NOW)
+    assert out["source"] == "aqicn" and out["us_aqi"] == 118 and out["pm2_5"] == 45
+
+
+def test_aqicn_rejects_dead_station_with_dash_aqi(monkeypatch):
+    _use(monkeypatch, _station("-", "2025-03-04T16:00:00+05:00"))                    # Karachi US Consulate
+    assert ingest.fetch_aqicn(NOW) is None
+
+
+def test_aqicn_rejects_stale_reading(monkeypatch):
+    _use(monkeypatch, _station(118, "2026-11-19T10:00:00+05:00"))                    # 2 days old
+    assert ingest.fetch_aqicn(NOW) is None
