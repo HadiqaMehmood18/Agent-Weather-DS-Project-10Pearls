@@ -1,11 +1,3 @@
-import os
-import tempfile
-
-_t = tempfile.mkdtemp()
-os.environ["LOCAL_STORE"] = _t + "/s"
-os.environ["LOCAL_MODELS"] = _t + "/m"
-os.environ.pop("HOPSWORKS_API_KEY", None)
-
 import pandas as pd
 
 from src.store import get_store, to_naive_utc
