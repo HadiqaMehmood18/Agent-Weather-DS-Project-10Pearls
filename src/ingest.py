@@ -13,8 +13,12 @@ Imputation strategy (applied per column, in this order):
   e) still missing: rolling 7-day median, then the overall median
   Wind direction is imputed through its sin/cos components, so 350 and 10 degrees are neighbours.
   `n_imputed` counts how many raw fields of a row were imputed.
-The hourly/backfill entry point (issue #6) is added later.
+Usage:
+  python -m src.ingest                                 hourly run: last 6 days, upsert the last 48 h
+  python -m src.ingest --start 2026-05-01              backfill from a date until today
+  python -m src.ingest --start ... --end ... --dry-run fetch and compute only, write nothing
 """
+import argparse
 import math
 import os
 import time
@@ -25,7 +29,8 @@ import pandas as pd
 import requests
 
 from . import config as C
-from .features import RAW_COLS, add_wind_components
+from .features import RAW_COLS, add_wind_components, build_features
+from .store import get_store
 
 OM_WEATHER = "https://api.open-meteo.com/v1/forecast"
 OM_ARCHIVE = "https://archive-api.open-meteo.com/v1/archive"
@@ -185,3 +190,78 @@ def impute(df):
         df[c] = s
     df["wind_dir"] = (np.rad2deg(np.arctan2(df["wind_sin"], df["wind_cos"])) + 360) % 360
     return df
+
+    def _chunks(start, end, days=31):
+    """Split [start, end] (dates) into consecutive ranges of at most `days` days (gentle on the API)."""
+    s = start
+    while s <= end:
+        e = min(s + timedelta(days=days - 1), end)
+        yield s, e
+        s = e + timedelta(days=1)
+
+
+def _store_ready(df):
+    """Column types the feature store accepts: nanosecond timestamps, int64, plain object strings."""
+    out = df.copy()
+    for c in out.columns:
+        if pd.api.types.is_datetime64_any_dtype(out[c]):
+            out[c] = out[c].astype("datetime64[ns]")
+        elif pd.api.types.is_integer_dtype(out[c]):
+            out[c] = out[c].astype("int64")
+        elif pd.api.types.is_string_dtype(out[c]) or out[c].dtype == object:
+            out[c] = out[c].astype(object)
+    return out
+
+
+def ingest(start=None, end=None, dry_run=False):
+    """One entry point for both modes.
+    hourly (no dates): fetch the last 6 days, upsert the last 48 h of features (late API revisions)
+    backfill (start/end dates): fetch the whole range in 31-day chunks, upsert all features
+    dry_run: do everything except writing to the feature store."""
+    now = pd.Timestamp.now("UTC").tz_convert(None).floor("h")
+    live = start is None
+    if live:
+        start, end = (now - pd.Timedelta(days=6)).date(), now.date()
+    om = pd.concat([fetch_open_meteo(s, e) for s, e in _chunks(start, end)], ignore_index=True)
+    om = om.drop_duplicates("ts")
+    om = om[om["ts"] <= now]                       # the API also returns model forecasts for later hours today
+    frames = [om]
+    if live:                                       # secondary sources only provide the current hour
+        for rec in (fetch_openweather(now), fetch_aqicn(now)):
+            if rec:
+                frames.append(pd.DataFrame([rec]))
+    raw = pd.concat(frames, ignore_index=True).reindex(columns=["ts", "source"] + RAW_COLS)
+    raw[RAW_COLS] = raw[RAW_COLS].apply(pd.to_numeric, errors="coerce")
+
+    feats = build_features(impute(fuse(raw)))
+    if live:
+        feats = feats.tail(48)
+    feats = feats.reset_index()
+    print(f"{'DRY RUN: ' if dry_run else ''}{len(feats)} feature rows, {feats['ts'].min()} to {feats['ts'].max()}, "
+          f"{int((feats['n_imputed'] > 0).sum())} rows with imputed values")
+    if dry_run:
+        return feats
+    store = get_store()
+    store.write("raw_observations", _store_ready(raw), pk=["ts", "source"], event_time="ts")
+    store.write("weather_features", _store_ready(feats), pk=["ts"], event_time="ts")
+    return feats
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Hourly ingestion (no arguments) or historical backfill.")
+    ap.add_argument("--start", help="backfill start date, YYYY-MM-DD")
+    ap.add_argument("--end", help="backfill end date, YYYY-MM-DD (default: today)")
+    ap.add_argument("--dry-run", action="store_true", help="fetch and compute, but do not write to the store")
+    a = ap.parse_args()
+    if a.end and not a.start:
+        ap.error("--end needs --start")
+    if a.start:
+        s = pd.Timestamp(a.start).date()
+        e = pd.Timestamp(a.end).date() if a.end else pd.Timestamp.now("UTC").date()
+        ingest(s, e, a.dry_run)
+    else:
+        ingest(dry_run=a.dry_run)
+
+
+if __name__ == "__main__":
+    main()
