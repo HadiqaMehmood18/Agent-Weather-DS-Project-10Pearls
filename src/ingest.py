@@ -232,7 +232,7 @@ def ingest(start=None, end=None, dry_run=False):
             if rec:
                 frames.append(pd.DataFrame([rec]))
     raw = pd.concat(frames, ignore_index=True).reindex(columns=["ts", "source"] + RAW_COLS)
-    raw[RAW_COLS] = raw[RAW_COLS].apply(pd.to_numeric, errors="coerce")
+    raw[RAW_COLS] = raw[RAW_COLS].apply(pd.to_numeric, errors="coerce").astype("float64")   # fixed schema: never int
 
     feats = build_features(impute(fuse(raw)))
     if live:

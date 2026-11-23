@@ -14,7 +14,7 @@ HORIZON = 24  # hours ahead
 # ---- Storage ----
 HOPSWORKS_API_KEY = os.getenv("HOPSWORKS_API_KEY", "")
 HOPSWORKS_PROJECT = os.getenv("HOPSWORKS_PROJECT", "")
-FG_VERSION = int(os.getenv("FG_VERSION", "2"))          # bump when the schema of a feature group changes
+FG_VERSION = int(os.getenv("FG_VERSION", "3"))          # bump when the schema of a feature group changes
 FG_STREAM = os.getenv("FG_STREAM", "1") == "1"          # write through Kafka + materialization job (no direct HopsFS access)
 DATA_DIR = Path(os.getenv("LOCAL_STORE", ROOT / "data" / "local_store"))
 MODEL_DIR = Path(os.getenv("LOCAL_MODELS", ROOT / "data" / "local_models"))

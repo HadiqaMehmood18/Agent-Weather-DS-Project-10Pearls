@@ -78,3 +78,20 @@ def test_secondary_source_is_stored_with_numeric_columns(monkeypatch):
     raw = get_store().read("raw_observations")
     assert set(raw["source"]) == {"open_meteo", "openweather"}
     assert all(pd.api.types.is_float_dtype(raw[c]) for c in RAW_COLS)
+
+
+def int_get(url, params, tries=3):
+    """Open-Meteo returns whole numbers for some variables (humidity, wind direction)."""
+    out = fake_get(url, params, tries)
+    for k in params["hourly"].split(","):
+        out["hourly"][k] = [None if v is None else int(v) for v in out["hourly"][k]]
+    out["hourly"][params["hourly"].split(",")[0]][10:13] = [None] * 3
+    return out
+
+
+def test_raw_columns_are_always_float_even_if_the_api_returns_integers(monkeypatch):
+    """Regression: an integer column in one run and a float column in the next breaks the feature group schema."""
+    monkeypatch.setattr(ingest, "_get", int_get)
+    ingest.ingest(_today() - timedelta(days=5), _today())
+    raw = get_store().read("raw_observations")
+    assert all(str(raw[c].dtype) == "float64" for c in RAW_COLS), raw[RAW_COLS].dtypes.to_dict()
