@@ -191,6 +191,7 @@ def impute(df):
     df["wind_dir"] = (np.rad2deg(np.arctan2(df["wind_sin"], df["wind_cos"])) + 360) % 360
     return df
 
+
 def _chunks(start, end, days=31):
     """Split [start, end] (dates) into consecutive ranges of at most `days` days (gentle on the API)."""
     s = start
