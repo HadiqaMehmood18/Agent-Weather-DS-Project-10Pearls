@@ -36,7 +36,7 @@ def test_store_ready_converts_types():
     df = pd.DataFrame({"ts": pd.to_datetime(["2026-11-01"]).astype("datetime64[us]"), "source": ["a"],
                        "n": np.array([1], dtype="int32"), "x": [1.5]})
     out = ingest._store_ready(df)
-    assert str(out["ts"].dtype) == "datetime64[ns]" and out["n"].dtype == "int64"
+    assert str(out["ts"].dtype) == "datetime64[us]" and out["n"].dtype == "int64"
     assert out["source"].dtype == object and out["x"].dtype == "float64"
 
 

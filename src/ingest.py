@@ -202,11 +202,11 @@ def _chunks(start, end, days=31):
 
 
 def _store_ready(df):
-    """Column types the feature store accepts: nanosecond timestamps, int64, plain object strings."""
+    """Column types the feature store accepts: microsecond timestamps, int64, plain object strings."""
     out = df.copy()
     for c in out.columns:
         if pd.api.types.is_datetime64_any_dtype(out[c]):
-            out[c] = out[c].astype("datetime64[ns]")
+            out[c] = out[c].astype("datetime64[us]")
         elif pd.api.types.is_integer_dtype(out[c]):
             out[c] = out[c].astype("int64")
         elif pd.api.types.is_string_dtype(out[c]) or out[c].dtype == object:
