@@ -13,3 +13,4 @@ joblib
 matplotlib
 seaborn
 hopsworks[python]>=4.2
+deltalake

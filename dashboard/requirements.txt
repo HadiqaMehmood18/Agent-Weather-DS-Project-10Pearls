@@ -6,3 +6,4 @@ pyarrow
 requests
 joblib
 hopsworks[python]>=4.2
+deltalake
