@@ -6,12 +6,15 @@ Uses Hopsworks when HOPSWORKS_API_KEY is set, otherwise a local parquet/joblib s
 """
 import json
 import tempfile
+import time
 from pathlib import Path
 
 import joblib
 import pandas as pd
 
 from . import config as C
+
+INSERT_ATTEMPTS = 3
 
 
 class LocalBackend:
@@ -62,7 +65,7 @@ class HopsworksBackend:
 
     def read(self, name):
         try:
-            fg = self.fs.get_feature_group(name, version=1)
+            fg = self.fs.get_feature_group(name, version=C.FG_VERSION)
             if fg is None:
                 return pd.DataFrame()
             return fg.read()
@@ -73,9 +76,18 @@ class HopsworksBackend:
         if df is None or len(df) == 0:
             return
         fg = self.fs.get_or_create_feature_group(
-            name=name, version=1, primary_key=pk, event_time=event_time,
-            description=f"AgentWeather: {name}", online_enabled=False)
-        fg.insert(df, write_options={"wait_for_job": wait})
+            name=name, version=C.FG_VERSION, primary_key=pk, event_time=event_time,
+            description=f"AgentWeather: {name}", online_enabled=False, stream=C.FG_STREAM)
+        for attempt in range(1, INSERT_ATTEMPTS + 1):      # transient Kafka/network errors happen
+            try:
+                fg.insert(df, write_options={"wait_for_job": wait})
+                return
+            except Exception as e:
+                if attempt == INSERT_ATTEMPTS:
+                    raise
+                print(f"insert into {name} failed ({type(e).__name__}), "
+                      f"retry {attempt}/{INSERT_ATTEMPTS - 1} in {30 * attempt} s")
+                time.sleep(30 * attempt)                   # safe to repeat: inserts are upserts on the primary key
 
     def get_current(self, target):
         name = f"aw_{target}"
