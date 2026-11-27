@@ -243,6 +243,7 @@ def ingest(start=None, end=None, dry_run=False):
     if dry_run:
         return feats
     store = get_store()
+    print(f"writing to {type(store).__name__}")        # HopsworksBackend or LocalBackend (no API key set!)
     store.write("raw_observations", _store_ready(raw), pk=["ts", "source"], event_time="ts")
     store.write("weather_features", _store_ready(feats), pk=["ts"], event_time="ts")
     return feats
